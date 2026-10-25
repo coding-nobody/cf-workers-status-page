@@ -6,6 +6,7 @@
   "main": "index.js",
   "private": true,
   "scripts": {
+    "test": "node --experimental-vm-modules --test tests/*.test.cjs",
     "dev": "flareact dev",
     "build": "yarn css && flareact build",
     "deploy": "yarn build && flareact publish",
