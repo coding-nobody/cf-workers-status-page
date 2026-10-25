@@ -76,7 +76,7 @@ You can either deploy with **Cloudflare Deploy Button** using GitHub Actions or 
 6. 🎉
 7. _\(optional\)_ Go to [Cloudflare Workers settings](https://dash.cloudflare.com/?to=/workers) and assign custom domain/route
    - e.g. `status-page.eidam.dev/*` _\(make sure you include `/*` as the Worker also serve static files\)_
-8. _\(optional\)_ Edit [wrangler.toml](./wrangler.toml) to adjust Worker settings or CRON Trigger schedule, especially if you are on [Workers Free plan](#workers-kv-free-tier)
+8. _\(optional\)_ Adjust stable snapshot frequency with `settings.kvWriteIntervalMinutes` in [config.yaml](./config.yaml); see [Workers Free plan](#workers-kv-free-tier). The CRON Trigger can stay at one minute.
 
 ### Telegram notifications
 
@@ -99,9 +99,19 @@ You can clone the repository yourself and use Wrangler CLI to develop/deploy, ex
 
 ## Workers KV free tier
 
-The Workers Free plan includes limited KV usage, but the quota is sufficient for 2-minute checks only
+Health checks still run every minute. Stable state is persisted every five
+minutes by default (`settings.kvWriteIntervalMinutes`), reducing normal Cron
+writes from 1,440 to about 288 per day. Any monitor's failure or recovery bypasses
+the interval and is persisted immediately, with the existing notifications.
 
-- Change the CRON trigger to 2 minutes interval (`crons = ["*/2 * * * *"]`) in [wrangler.toml](./wrangler.toml)
+When `collectResponseTimes` is enabled, history retains samples from persisted
+checks, not every minute. The 1,000 free writes/day allowance is shared with
+other account activity; frequent status changes can still exhaust it. This is
+not a hard quota limiter or a fix for KV's eventual consistency.
+
+See [KV write budget and rollout verification](./docs/kv-write-budget.md) for
+tests, sampling semantics, limitations, and how to identify the actual deployed
+Worker and namespace writers before rollout.
 
 ## Known issues
 

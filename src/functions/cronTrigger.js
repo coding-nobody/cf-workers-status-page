@@ -8,14 +8,18 @@ import {
   setKVMonitors,
 } from './helpers'
 
-function getDate() {
-  return new Date().toISOString().split('T')[0]
-}
-
 export async function processCronTrigger(event) {
-  // Get Worker PoP and save it to monitorsStateMetadata
-  const checkLocation = await getCheckLocation()
-  const checkDay = getDate()
+  const checkTime = Number.isFinite(event.scheduledTime)
+    ? event.scheduledTime
+    : Date.now()
+  const checkDay = new Date(checkTime).toISOString().split('T')[0]
+  // A location lookup failure must not prevent health checks or notifications.
+  let checkLocation = 'unknown'
+  try {
+    checkLocation = await getCheckLocation()
+  } catch (error) {
+    console.warn('Unable to determine check location')
+  }
 
   // Get monitors state from KV
   let monitorsState = await getKVMonitors()
@@ -24,6 +28,21 @@ export async function processCronTrigger(event) {
   if (!monitorsState) {
     monitorsState = { lastUpdate: {}, monitors: {} }
   }
+
+  // Only the last successfully persisted check controls the next snapshot.
+  // Do not use isolate memory: scheduled invocations may run in a new isolate.
+  const configuredInterval = config.settings.kvWriteIntervalMinutes
+  const intervalMinutes =
+    Number.isInteger(configuredInterval) && configuredInterval >= 2
+      ? configuredInterval
+      : 5
+  const lastPersistedCheck =
+    monitorsState.lastUpdate.scheduledTime || monitorsState.lastUpdate.time
+  const snapshotDue =
+    !Number.isFinite(lastPersistedCheck) ||
+    checkTime < lastPersistedCheck ||
+    checkTime - lastPersistedCheck >= intervalMinutes * 60 * 1000
+  let statusChanged = false
 
   // Reset default all monitors state to true
   monitorsState.lastUpdate.allOperational = true
@@ -51,7 +70,13 @@ export async function processCronTrigger(event) {
 
     // Perform a check and measure time
     const requestStartTime = Date.now()
-    const checkResponse = await fetch(monitor.url, init)
+    let checkResponse
+    try {
+      checkResponse = await fetch(monitor.url, init)
+    } catch (error) {
+      // A rejected fetch is a failed check, not a reason to abandon the batch.
+      checkResponse = { status: 0, statusText: 'Network error' }
+    }
     const requestTime = Math.round(Date.now() - requestStartTime)
 
     // Determine whether operational and status changed
@@ -60,6 +85,7 @@ export async function processCronTrigger(event) {
     const monitorStatusChanged =
       monitorsState.monitors[monitor.id].lastCheck.operational !==
       monitorOperational
+    statusChanged = statusChanged || monitorStatusChanged
 
     // Save monitor's last check response status
     monitorsState.monitors[monitor.id].lastCheck = {
@@ -138,12 +164,29 @@ export async function processCronTrigger(event) {
     }
   }
 
-  // Save last update information
-  monitorsState.lastUpdate.time = Date.now()
-  monitorsState.lastUpdate.loc = checkLocation
-
-  // Save monitorsState to KV storage
-  await setKVMonitors(monitorsState)
+  // Keep minute-level checks and alerts, but persist stable state less often.
+  // A failure AND its recovery each bypass the interval, even between snapshots.
+  // Response-time history contains samples from persisted checks only; nothing
+  // is buffered in memory or claimed to survive a cold start without a KV write.
+  const reason = statusChanged ? 'status-change' : 'interval'
+  if (statusChanged || snapshotDue) {
+    monitorsState.lastUpdate.time = Date.now()
+    monitorsState.lastUpdate.scheduledTime = checkTime
+    monitorsState.lastUpdate.loc = checkLocation
+    try {
+      await setKVMonitors(monitorsState)
+      console.log(
+        JSON.stringify({ event: 'kv-persistence', outcome: 'written', reason }),
+      )
+    } catch (error) {
+      console.error(
+        JSON.stringify({ event: 'kv-persistence', outcome: 'failed', reason }),
+      )
+      throw error
+    }
+  } else {
+    console.log(JSON.stringify({ event: 'kv-persistence', outcome: 'skipped' }))
+  }
 
   return new Response('OK')
 }
