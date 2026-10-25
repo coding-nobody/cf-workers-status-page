@@ -111,7 +111,23 @@ NODE_ENV=production NODE_OPTIONS=--openssl-legacy-provider npx --yes yarn@1.22.2
 ```
 
 The OpenSSL option is for running the repository's Webpack 4 toolchain on modern
-Node, not a Worker runtime setting. Do not run `deploy`, `publish`, or a repository
+Node, not a Worker runtime setting. For separate frontend and Worker JavaScript
+compilation (the Worker build needs the frontend manifest first):
+
+```sh
+NODE_ENV=production NODE_OPTIONS=--openssl-legacy-provider node_modules/.bin/webpack --config node_modules/flareact/configs/webpack.client.config.js --out ./out --mode production
+NODE_ENV=production NODE_OPTIONS=--openssl-legacy-provider node_modules/.bin/webpack --config node_modules/flareact/webpack.js --mode production --output-path "$PWD/dist"
+```
+
+Validation on 2026-10-25 with Node 24.22.1: all 14 regression tests passed;
+Prettier and `git diff --check` passed; both JavaScript compilations above passed.
+The complete `yarn build` failed at its CSS step with PostCSS's
+`Package subpath './lib/node' is not defined by "exports"` error. The identical
+failure was reproduced on unmodified main (`1439b67`) with the same locked
+dependencies. This pre-existing toolchain incompatibility was not changed in
+the KV fix; a full production build is therefore **not** claimed to pass.
+
+Do not run `deploy`, `publish`, or a repository
 dispatch as part of validation. The existing GitHub workflow deploys on pushes
 to `main` and on `repository_dispatch`; a separate branch/PR does not match those
 triggers, but merging into `main` would trigger deployment if Actions/secrets are
